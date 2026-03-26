@@ -1,0 +1,17 @@
+# Ignorer le dossier de build local
+target
+*.jar
+
+# Fichiers IDE et Git
+.git
+.vscode
+.idea
+*.log
+.classpath
+.project
+.settings
+.factorypath
+
+# Ne pas copier le Dockerfile lui-même
+Dockerfile
+.dockerignore

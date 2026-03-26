@@ -1,0 +1,17 @@
+# Ignorer les dépendances locales
+node_modules
+.angular
+
+# Ignorer les builds locaux
+dist
+out-tsc
+
+# Fichiers IDE et Git
+.git
+.vscode
+.idea
+*.log
+
+# Ne pas copier le Dockerfile lui-même dans l'image
+Dockerfile
+.dockerignore
