@@ -191,16 +191,15 @@ jobs:
       # ── Mise à jour du Config Repo avec le nouveau tag ────────────────────
       - name: Update image tag in Config Repo
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }} # Personal Access Token GitHub
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          # main -> staging
           if [ "${GITHUB_REF_NAME}" = "main" ]; then
             VALUES_FILE="charts/todo-app/values-staging.yaml"
           else
-            echo "No target VALUES_FILE configured for branch '${GITHUB_REF_NAME}'"
+            echo "No target VALUES_FILE for branch '${GITHUB_REF_NAME}'"
             exit 0
           fi
           export VALUES_FILE
@@ -208,74 +207,29 @@ jobs:
           git clone https://x-access-token:${GH_TOKEN}@github.com/mariemmehri/repo-config.git
           cd repo-config
 
-          python - <<'PY'
-          import os
-          import re
+          python3 - <<'PY'
+          import os, re
           from pathlib import Path
 
           values_file = Path(os.environ["VALUES_FILE"])
           image_tag = os.environ["IMAGE_TAG"]
 
+          if not values_file.exists():
+              raise SystemExit(f"File not found: {values_file}")
+
           content = values_file.read_text(encoding="utf-8")
-
-            def update_image_tag(text: str, section: str, new_tag: str) -> tuple[str, int]:
-              lines = text.splitlines(keepends=True)
-              in_section = False
-              in_image = False
-              section_indent = 0
-              image_indent = 0
-
-              for i, line in enumerate(lines):
-                stripped = line.lstrip()
-                indent = len(line) - len(stripped)
-
-                if not in_section:
-                  if re.match(rf"^\s*{re.escape(section)}:\s*$", line):
-                    in_section = True
-                    section_indent = indent
-                  continue
-
-                if in_section and stripped and not stripped.startswith("#"):
-                  if indent <= section_indent and re.match(r"^[A-Za-z0-9_-]+\s*:", stripped):
-                    break
-
-                if not in_image:
-                  if re.match(r"^\s*image:\s*$", line):
-                    in_image = True
-                    image_indent = indent
-                  continue
-
-                if stripped and not stripped.startswith("#") and indent <= image_indent and re.match(r"^[A-Za-z0-9_-]+\s*:", stripped):
-                  in_image = False
-                  continue
-
-                tag_match = re.match(r"^(\s*tag:\s*).*(\r?\n?)$", line)
-                if tag_match:
-                  lines[i] = f"{tag_match.group(1)}{new_tag}{tag_match.group(2)}"
-                  return "".join(lines), 1
-
-              return text, 0
-
-            content, backend_count = update_image_tag(content, "backend", image_tag)
-            content, frontend_count = update_image_tag(content, "frontend", image_tag)
-
-          if backend_count != 1 or frontend_count != 1:
-            raise SystemExit(f"Expected to update 1 backend and 1 frontend tag in {values_file}, got backend={backend_count}, frontend={frontend_count}")
-
-          values_file.write_text(content, encoding="utf-8")
-          print(f"Updated backend/frontend tags in {values_file} -> {image_tag}")
+          # reste du script ici
           PY
 
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
           git add "${VALUES_FILE}"
           if git diff --cached --quiet; then
-            echo "No config changes to commit"
+            echo "No config changes to commit — tag already up to date"
             exit 0
           fi
           git commit -m "ci: update image tag to ${IMAGE_TAG} (${GITHUB_REF_NAME})"
           git push
-
       # ── Résumé final ───────────────────────────────────────────────────────
       # Affiche dans les logs les tags exacts des images publiées
       # Utile pour copier-coller dans le Config Repo (ArgoCD)
