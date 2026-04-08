@@ -196,9 +196,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # main -> prod, develop -> staging
+          # main -> staging
           if [ "${GITHUB_REF_NAME}" = "main" ]; then
             VALUES_FILE="charts/todo-app/values-staging.yaml"
+          else
+            echo "No target VALUES_FILE configured for branch '${GITHUB_REF_NAME}'"
+            exit 0
           fi
           export VALUES_FILE
 
@@ -214,11 +217,47 @@ jobs:
           image_tag = os.environ["IMAGE_TAG"]
 
           content = values_file.read_text(encoding="utf-8")
-          backend_pattern = r"(backend:\s*\n(?:.*\n)*?image:\s*\n\s*tag:\s*)([^\n]+)"
-          frontend_pattern = r"(frontend:\s*\n(?:.*\n)*?image:\s*\n\s*tag:\s*)([^\n]+)"
 
-          content, backend_count = re.subn(backend_pattern, rf"\g<1>{image_tag}", content, count=1)
-          content, frontend_count = re.subn(frontend_pattern, rf"\g<1>{image_tag}", content, count=1)
+            def update_image_tag(text: str, section: str, new_tag: str) -> tuple[str, int]:
+              lines = text.splitlines(keepends=True)
+              in_section = False
+              in_image = False
+              section_indent = 0
+              image_indent = 0
+
+              for i, line in enumerate(lines):
+                stripped = line.lstrip()
+                indent = len(line) - len(stripped)
+
+                if not in_section:
+                  if re.match(rf"^\s*{re.escape(section)}:\s*$", line):
+                    in_section = True
+                    section_indent = indent
+                  continue
+
+                if in_section and stripped and not stripped.startswith("#"):
+                  if indent <= section_indent and re.match(r"^[A-Za-z0-9_-]+\s*:", stripped):
+                    break
+
+                if not in_image:
+                  if re.match(r"^\s*image:\s*$", line):
+                    in_image = True
+                    image_indent = indent
+                  continue
+
+                if stripped and not stripped.startswith("#") and indent <= image_indent and re.match(r"^[A-Za-z0-9_-]+\s*:", stripped):
+                  in_image = False
+                  continue
+
+                tag_match = re.match(r"^(\s*tag:\s*).*(\r?\n?)$", line)
+                if tag_match:
+                  lines[i] = f"{tag_match.group(1)}{new_tag}{tag_match.group(2)}"
+                  return "".join(lines), 1
+
+              return text, 0
+
+            content, backend_count = update_image_tag(content, "backend", image_tag)
+            content, frontend_count = update_image_tag(content, "frontend", image_tag)
 
           if backend_count != 1 or frontend_count != 1:
             raise SystemExit(f"Expected to update 1 backend and 1 frontend tag in {values_file}, got backend={backend_count}, frontend={frontend_count}")
