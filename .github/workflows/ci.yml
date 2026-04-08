@@ -17,11 +17,11 @@ name: CI — Build & Push to ACR
 on:
   push:
     branches:
-      - main       # Pipeline complet (build + push ACR)
-      - develop    # Pipeline complet (build + push ACR)
+      - main # Pipeline complet (build + push ACR)
+      # - develop # Pipeline complet (build + push ACR)
   pull_request:
     branches:
-      - main       # Build + test UNIQUEMENT (pas de push ACR)
+      - main # Build + test UNIQUEMENT (pas de push ACR)
 
 # ─── Variables globales ──────────────────────────────────────────────────────
 env:
@@ -36,12 +36,10 @@ env:
   # C'est le principe GitOps : chaque image est traçable jusqu'au commit source
   IMAGE_TAG: ${{ github.sha }}
 
-
-
-#   We keep backend and frontend builds in separate jobs 
-#   so each stack gets the environment it needs (Java/Maven for Spring, Node/npm for Angular), 
+#   We keep backend and frontend builds in separate jobs
+#   so each stack gets the environment it needs (Java/Maven for Spring, Node/npm for Angular),
 #   failures are isolated and quicker to diagnose, work runs in parallel for faster feedback,
-#   caching stays efficient per toolchain, and only if both succeed do we move on to the 
+#   caching stays efficient per toolchain, and only if both succeed do we move on to the
 #   Docker/ACR step.
 
 # =============================================================================
@@ -50,11 +48,11 @@ env:
 jobs:
   backend-ci:
     name: 🔧 Backend — Build & Test (Maven)
-    runs-on: ubuntu-latest  # GitHub fournit cette VM gratuitement
+    runs-on: ubuntu-latest # GitHub fournit cette VM gratuitement
 
     defaults:
       run:
-        working-directory: backend  # Toutes les commandes s'exécutent dans /backend
+        working-directory: backend # Toutes les commandes s'exécutent dans /backend
 
     steps:
       # Étape 1 : Récupérer le code source depuis GitHub
@@ -65,8 +63,8 @@ jobs:
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'  # Distribution OpenJDK recommandée
+          java-version: "17"
+          distribution: "temurin" # Distribution OpenJDK recommandée
 
       # Étape 3 : Cache des dépendances Maven
       # Sans cache : Maven retélécharge ~200MB de JARs à chaque run
@@ -88,7 +86,7 @@ jobs:
       # Étape 5 : Sauvegarder le rapport de tests pour inspection
       - name: 📊 Upload rapport de tests
         uses: actions/upload-artifact@v4
-        if: always()  # Même si les tests échouent, on veut le rapport
+        if: always() # Même si les tests échouent, on veut le rapport
         with:
           name: backend-test-report
           path: backend/target/surefire-reports/
@@ -113,7 +111,7 @@ jobs:
       - name: 🟢 Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       # Cache des node_modules
       # node_modules peut peser 500MB+ → le cache est critique ici
@@ -193,16 +191,50 @@ jobs:
       # ── Mise à jour du Config Repo avec le nouveau tag ────────────────────
       - name: Update image tag in Config Repo
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}   # Personal Access Token GitHub
+          GH_TOKEN: ${{ secrets.GH_PAT }} # Personal Access Token GitHub
+          IMAGE_TAG: ${{ github.sha }}
         run: |
+          set -euo pipefail
+
+          # main -> prod, develop -> staging
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            VALUES_FILE="charts/todo-app/values-staging.yaml"
+          fi
+          export VALUES_FILE
+
           git clone https://x-access-token:${GH_TOKEN}@github.com/mariemmehri/repo-config.git
           cd repo-config
-          # Remplace le tag backend dans values-staging.yaml
-          sed -i "s|tag:.*|tag: ${{ github.sha }}|" charts/todo-app/values-staging.yaml
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          values_file = Path(os.environ["VALUES_FILE"])
+          image_tag = os.environ["IMAGE_TAG"]
+
+          content = values_file.read_text(encoding="utf-8")
+          backend_pattern = r"(backend:\s*\n(?:.*\n)*?image:\s*\n\s*tag:\s*)([^\n]+)"
+          frontend_pattern = r"(frontend:\s*\n(?:.*\n)*?image:\s*\n\s*tag:\s*)([^\n]+)"
+
+          content, backend_count = re.subn(backend_pattern, rf"\g<1>{image_tag}", content, count=1)
+          content, frontend_count = re.subn(frontend_pattern, rf"\g<1>{image_tag}", content, count=1)
+
+          if backend_count != 1 or frontend_count != 1:
+            raise SystemExit(f"Expected to update 1 backend and 1 frontend tag in {values_file}, got backend={backend_count}, frontend={frontend_count}")
+
+          values_file.write_text(content, encoding="utf-8")
+          print(f"Updated backend/frontend tags in {values_file} -> {image_tag}")
+          PY
+
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
-          git add .
-          git commit -m "ci: update image tag to ${{ github.sha }}"
+          git add "${VALUES_FILE}"
+          if git diff --cached --quiet; then
+            echo "No config changes to commit"
+            exit 0
+          fi
+          git commit -m "ci: update image tag to ${IMAGE_TAG} (${GITHUB_REF_NAME})"
           git push
 
       # ── Résumé final ───────────────────────────────────────────────────────
@@ -213,13 +245,10 @@ jobs:
     #       echo "============================================"
     #       echo "  Images publiées sur ACR"
     #       echo "============================================"
-        #   echo "  Backend  : {{ env.ACR_LOGIN_SERVER }}/{{ env.BACKEND_IMAGE }}:{{ env.IMAGE_TAG }}"
-        #   echo "  Frontend : {{ env.ACR_LOGIN_SERVER }}/{{ env.FRONTEND_IMAGE }}:{{ env.IMAGE_TAG }}"
+    #   echo "  Backend  : {{ env.ACR_LOGIN_SERVER }}/{{ env.BACKEND_IMAGE }}:{{ env.IMAGE_TAG }}"
+    #   echo "  Frontend : {{ env.ACR_LOGIN_SERVER }}/{{ env.FRONTEND_IMAGE }}:{{ env.IMAGE_TAG }}"
     #       echo ""
     #       echo "  Prochain step GitOps :"
     #       echo "  → Mettre à jour le Config Repo avec ce SHA"
     #       echo "  → ArgoCD détecte le changement et déploie automatiquement"
     #       echo "============================================"
-      
-
-       
