@@ -18,7 +18,6 @@ on:
   push:
     branches:
       - main # Pipeline complet (build + push ACR)
-      # - develop # Pipeline complet (build + push ACR)
   pull_request:
     branches:
       - main # Build + test UNIQUEMENT (pas de push ACR)
@@ -212,14 +211,32 @@ jobs:
           from pathlib import Path
 
           values_file = Path(os.environ["VALUES_FILE"])
-          image_tag = os.environ["IMAGE_TAG"]
+          image_tag   = os.environ["IMAGE_TAG"]
 
           if not values_file.exists():
               raise SystemExit(f"File not found: {values_file}")
 
           content = values_file.read_text(encoding="utf-8")
-          # reste du script ici
+
+          # Remplace chaque "tag: <valeur>" par "tag: <nouveau_sha>"
+          new_content = re.sub(
+              r'^(\s+tag:\s*)\S+',
+              lambda m: m.group(1) + image_tag,
+              content,
+              flags=re.MULTILINE
+          )
+
+          if content == new_content:
+              print("⚠️  Aucun changement détecté dans le fichier")
+          else:
+              values_file.write_text(new_content, encoding="utf-8")
+              print(f"✅ Tags mis à jour → {image_tag}")
+
+          print("--- Contenu final ---")
+          print(new_content)
           PY
+
+
 
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
@@ -230,18 +247,4 @@ jobs:
           fi
           git commit -m "ci: update image tag to ${IMAGE_TAG} (${GITHUB_REF_NAME})"
           git push
-      # ── Résumé final ───────────────────────────────────────────────────────
-      # Affiche dans les logs les tags exacts des images publiées
-      # Utile pour copier-coller dans le Config Repo (ArgoCD)
-    #   - name: ✅ Résumé — Images publiées
-    #     run: |
-    #       echo "============================================"
-    #       echo "  Images publiées sur ACR"
-    #       echo "============================================"
-    #   echo "  Backend  : {{ env.ACR_LOGIN_SERVER }}/{{ env.BACKEND_IMAGE }}:{{ env.IMAGE_TAG }}"
-    #   echo "  Frontend : {{ env.ACR_LOGIN_SERVER }}/{{ env.FRONTEND_IMAGE }}:{{ env.IMAGE_TAG }}"
-    #       echo ""
-    #       echo "  Prochain step GitOps :"
-    #       echo "  → Mettre à jour le Config Repo avec ce SHA"
-    #       echo "  → ArgoCD détecte le changement et déploie automatiquement"
-    #       echo "============================================"
+
