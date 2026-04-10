@@ -1,250 +1,173 @@
-# =============================================================================
-# CI Pipeline — Todo App (Spring Boot + Angular)
-#
-# Ce workflow se déclenche à chaque push sur main ou develop.
-# Il fait 4 choses dans l'ordre :
-#   1. Build + test du backend (Maven)
-#   2. Build + lint du frontend (Angular)
-#   3. Build des images Docker (backend + frontend)
-#   4. Push des images vers Azure Container Registry (ACR)
-#
-# Les images sont taguées avec le SHA du commit → traçabilité GitOps complète.
-# =============================================================================
-
 name: CI — Build & Push to ACR
 
-# ─── Déclencheurs ────────────────────────────────────────────────────────────
 on:
   push:
     branches:
-      - main # Pipeline complet (build + push ACR)
+      - main
   pull_request:
     branches:
-      - main # Build + test UNIQUEMENT (pas de push ACR)
+      - main
 
-# ─── Variables globales ──────────────────────────────────────────────────────
 env:
-  # L'adresse de ton registre ACR (ex: acrtodosophra.azurecr.io)
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-
-  # Noms des images dans ACR
   BACKEND_IMAGE: todo-backend
   FRONTEND_IMAGE: todo-frontend
-
-  # Tag = 7 premiers caractères du SHA du commit (ex: a1b2c3d)
-  # C'est le principe GitOps : chaque image est traçable jusqu'au commit source
   IMAGE_TAG: ${{ github.sha }}
 
-#   We keep backend and frontend builds in separate jobs
-#   so each stack gets the environment it needs (Java/Maven for Spring, Node/npm for Angular),
-#   failures are isolated and quicker to diagnose, work runs in parallel for faster feedback,
-#   caching stays efficient per toolchain, and only if both succeed do we move on to the
-#   Docker/ACR step.
-
-# =============================================================================
-# JOB 1 — Build et test du backend Spring Boot
-# =============================================================================
 jobs:
+  # ═══════════════════════════════════════════════════════
+  # JOB 1 — Backend CI
+  # ═══════════════════════════════════════════════════════
   backend-ci:
-    name: 🔧 Backend — Build & Test (Maven)
-    runs-on: ubuntu-latest # GitHub fournit cette VM gratuitement
-
+    name: 🔧 Backend — Build & Test
+    runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend # Toutes les commandes s'exécutent dans /backend
-
+        working-directory: backend
     steps:
-      # Étape 1 : Récupérer le code source depuis GitHub
-      - name: 📥 Checkout du code source
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      # Étape 2 : Installer Java 17 sur la VM
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
           java-version: "17"
-          distribution: "temurin" # Distribution OpenJDK recommandée
+          distribution: "temurin"
 
-      # Étape 3 : Cache des dépendances Maven
-      # Sans cache : Maven retélécharge ~200MB de JARs à chaque run
-      # Avec cache : réutilise ce qui est déjà téléchargé → gain de 2-3 min
-      - name: 📦 Cache Maven (~/.m2)
+      - name: 📦 Cache Maven
         uses: actions/cache@v4
         with:
           path: ~/.m2
           key: ${{ runner.os }}-maven-${{ hashFiles('backend/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
+          restore-keys: ${{ runner.os }}-maven-
 
-      # Étape 4 : Compiler le code et lancer les tests unitaires
-      - name: 🧪 Build + Tests (mvn verify)
+      - name: 🧪 Build + Tests
         run: mvn verify -q
-        # "verify" = compile + test + package
-        # Si un test échoue → le pipeline s'arrête ici (fail-fast)
 
-      # Étape 5 : Sauvegarder le rapport de tests pour inspection
-      - name: 📊 Upload rapport de tests
+      - name: 📊 Upload test report
         uses: actions/upload-artifact@v4
-        if: always() # Même si les tests échouent, on veut le rapport
+        if: always()
         with:
           name: backend-test-report
           path: backend/target/surefire-reports/
           retention-days: 7
 
-  # ===========================================================================
-  # JOB 2 — Build du frontend Angular
-  # ===========================================================================
+  # ═══════════════════════════════════════════════════════
+  # JOB 2 — Frontend CI
+  # ═══════════════════════════════════════════════════════
   frontend-ci:
-    name: 🎨 Frontend — Build (Angular)
+    name: 🎨 Frontend — Build
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: frontend
-
     steps:
-      - name: 📥 Checkout du code source
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      # Installer Node.js 20 (version utilisée dans ton Dockerfile)
       - name: 🟢 Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # Cache des node_modules
-      # node_modules peut peser 500MB+ → le cache est critique ici
       - name: 📦 Cache node_modules
         uses: actions/cache@v4
         with:
           path: frontend/node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+          restore-keys: ${{ runner.os }}-node-
 
-      # Installer les dépendances npm
       - name: 📥 npm install
         run: npm install --legacy-peer-deps
-        # --legacy-peer-deps : nécessaire pour Angular 17 (dépendances peer strictes)
 
-      # Build de production Angular
-      - name: 🏗️ Build Angular (production)
+      - name: 🏗️ Build Angular
         run: npm run build
-        # Génère le bundle optimisé dans dist/todo-frontend/browser/
 
-  # ===========================================================================
-  # JOB 3 — Build des images Docker + Push vers ACR
-  # Ce job attend que les 2 jobs précédents réussissent
-  # ===========================================================================
+  # ═══════════════════════════════════════════════════════
+  # JOB 3 — Docker Build & Push + Config Update
+  # ═══════════════════════════════════════════════════════
   docker-build-push:
     name: 🐳 Docker Build & Push → ACR
     runs-on: ubuntu-latest
     needs: [backend-ci, frontend-ci]
-    # "needs" = ce job ne démarre QUE SI backend-ci ET frontend-ci ont réussi
-
-    # Ne push vers ACR QUE sur push (pas sur pull_request)
-    # Sur une PR, on veut juste vérifier que le code compile
     if: github.event_name == 'push'
 
     steps:
-      - name: 📥 Checkout du code source
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      # ── Connexion à Azure Container Registry ──────────────────────────────
-      # On utilise les secrets configurés dans GitHub (Settings → Secrets)
-      - name: 🔐 Login vers ACR
+      - name: 🔐 Login ACR
         uses: azure/docker-login@v2
         with:
           login-server: ${{ env.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      # ── Backend : Build + Push ─────────────────────────────────────────────
-      # Format du tag : <acr>.azurecr.io/todo-backend:<sha-commit>
-      # Exemple      : acrtodosophra.azurecr.io/todo-backend:a1b2c3d4e5f6...
-      - name: 🐳 Build image Backend
+      - name: 🐳 Build & Push Backend
         run: |
           docker build \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:latest \
+            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             ./backend
+          docker push \
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
 
-      - name: 📤 Push image Backend → ACR
-        run: |
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:latest
-
-      # ── Frontend : Build + Push ────────────────────────────────────────────
-      - name: 🐳 Build image Frontend
+      - name: 🐳 Build & Push Frontend
         run: |
           docker build \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:latest \
+            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             ./frontend
+          docker push \
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
 
-      - name: 📤 Push image Frontend → ACR
-        run: |
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:latest
-
-      # ── Mise à jour du Config Repo avec le nouveau tag ────────────────────
-      - name: Update image tag in Config Repo
+      - name: 🔄 Update image tag in Config Repo
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           IMAGE_TAG: ${{ github.sha }}
+          CONFIG_REPO: mariemmehri/repo-config
+          VALUES_FILE: charts/todo-app/values-staging.yaml
+          GIT_USER_EMAIL: "github-actions[bot]@users.noreply.github.com"
+          GIT_USER_NAME: "github-actions[bot]"
         run: |
           set -euo pipefail
 
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            VALUES_FILE="charts/todo-app/values-staging.yaml"
-          else
-            echo "No target VALUES_FILE for branch '${GITHUB_REF_NAME}'"
-            exit 0
-          fi
-          export VALUES_FILE
+          # ── Install yq ──────────────────────────────────
+          echo "📦 Installing yq..."
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+          yq --version
 
-          git clone https://x-access-token:${GH_TOKEN}@github.com/mariemmehri/repo-config.git
-          cd repo-config
+          # ── Clone Config Repo ────────────────────────────
+          echo "📥 Cloning config repo..."
+          git clone \
+            https://x-access-token:${GH_PAT}@github.com/${CONFIG_REPO}.git \
+            config-repo
+          cd config-repo
 
-          python3 - <<'PY'
-          import os, re
-          from pathlib import Path
+          # ── Update tags ──────────────────────────────────
+          echo "✏️  Updating image tags to ${IMAGE_TAG}..."
+          yq e ".backend.image.tag = \"${IMAGE_TAG}\"" -i ${VALUES_FILE}
+          yq e ".frontend.image.tag = \"${IMAGE_TAG}\"" -i ${VALUES_FILE}
 
-          values_file = Path(os.environ["VALUES_FILE"])
-          image_tag   = os.environ["IMAGE_TAG"]
+          # ── Verify ───────────────────────────────────────
+          echo "🔍 Verifying changes..."
+          grep "tag:" ${VALUES_FILE}
 
-          if not values_file.exists():
-              raise SystemExit(f"File not found: {values_file}")
+          # ── Commit & Push ────────────────────────────────
+          git config user.email "${GIT_USER_EMAIL}"
+          git config user.name "${GIT_USER_NAME}"
+          git add ${VALUES_FILE}
 
-          content = values_file.read_text(encoding="utf-8")
-
-          # Remplace chaque "tag: <valeur>" par "tag: <nouveau_sha>"
-          new_content = re.sub(
-              r'^(\s+tag:\s*)\S+',
-              lambda m: m.group(1) + image_tag,
-              content,
-              flags=re.MULTILINE
-          )
-
-          if content == new_content:
-              print("⚠️  Aucun changement détecté dans le fichier")
-          else:
-              values_file.write_text(new_content, encoding="utf-8")
-              print(f"✅ Tags mis à jour → {image_tag}")
-
-          print("--- Contenu final ---")
-          print(new_content)
-          PY
-
-
-
-          git config user.email "ci@github.com"
-          git config user.name "GitHub Actions"
-          git add "${VALUES_FILE}"
           if git diff --cached --quiet; then
-            echo "No config changes to commit — tag already up to date"
+            echo "⚠️  No changes — tag already up to date"
             exit 0
           fi
-          git commit -m "ci: update image tag to ${IMAGE_TAG} (${GITHUB_REF_NAME})"
-          git push
 
+          git commit -m "ci: update image tags to ${IMAGE_TAG}
+
+          Triggered by: ${GITHUB_REPOSITORY}@${GITHUB_SHA}
+          Branch: ${GITHUB_REF_NAME}
+          Workflow: ${GITHUB_WORKFLOW}"
+
+          git push
+          echo "✅ Done"
