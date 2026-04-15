@@ -96,28 +96,42 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
+      - name: 🧹 Normalize ACR login server
+        id: normalize
+        run: |
+          REGISTRY="${ACR_LOGIN_SERVER#https://}"
+          REGISTRY="${REGISTRY#http://}"
+          REGISTRY="${REGISTRY%/}"
+
+          if [ -z "$REGISTRY" ]; then
+            echo "ACR_LOGIN_SERVER is empty after normalization"
+            exit 1
+          fi
+
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
       - name: 🔐 Login ACR
-        uses: azure/docker-login@v2
+        uses: docker/login-action@v3
         with:
-          login-server: ${{ env.ACR_LOGIN_SERVER }}
+          registry: ${{ steps.normalize.outputs.registry }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: 🐳 Build & Push Backend
         run: |
           docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
+            -t ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             ./backend
           docker push \
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+            ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
 
       - name: 🐳 Build & Push Frontend
         run: |
           docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
+            -t ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             ./frontend
           docker push \
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
+            ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
 
       - name: 🔄 Update image tag in Config Repo
         env:
