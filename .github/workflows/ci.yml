@@ -1,5 +1,5 @@
 name: CI — Build & Push to ACR
-
+# ll
 on:
   push:
     branches:
@@ -110,26 +110,9 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$ACR_NAME" ]; then
-            echo "Cannot derive ACR name from ACR_LOGIN_SERVER"
-            exit 1
-          fi
-
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
-          echo "acr_name=$ACR_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: 🔐 Azure Login (preferred)
-        if: env.AZURE_CREDENTIALS != ''
-        uses: azure/login@v2
-        with:
-          creds: ${{ env.AZURE_CREDENTIALS }}
-
-      - name: 🔐 Login ACR via Azure CLI (preferred)
-        if: env.AZURE_CREDENTIALS != ''
-        run: az acr login --name ${{ steps.normalize.outputs.acr_name }}
-
-      - name: 🔐 Login ACR via username/password (fallback)
-        if: env.AZURE_CREDENTIALS == ''
+      - name: 🔐 Login ACR
         uses: docker/login-action@v3
         with:
           registry: ${{ steps.normalize.outputs.registry }}
