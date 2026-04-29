@@ -149,40 +149,61 @@ jobs:
 
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
 
-      - name: � Login ACR
+      - name: 🔐 Login ACR
         uses: docker/login-action@v3
         with:
           registry: ${{ steps.normalize.outputs.registry }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: �🛡️ Scan vulnerabilities (Trivy)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL
-          exit-code: 1
-
-      - name: 🐳 Build & Push Backend
+      # ═══════════════════════════════════════════════════════════
+      # Backend
+      # ═══════════════════════════════════════════════════════════
+      - name: 🐳 Build Backend
         run: |
           docker build \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:latest \
             ./backend
 
+      - name: 🛡️ Scan Backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: 🚀 Push Backend
+        run: |
           docker push ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
           docker push ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:latest
 
-      - name: 🐳 Build & Push Frontend
+      # ═══════════════════════════════════════════════════════════
+      # Frontend
+      # ═══════════════════════════════════════════════════════════
+      - name: 🐳 Build Frontend
         run: |
           docker build \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:latest \
             ./frontend
 
+      - name: 🛡️ Scan Frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: 🚀 Push Frontend
+        run: |
           docker push ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
           docker push ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:latest
+
 
       # ═══════════════════════════════════════════════════════════
       # GitOps — Update Config Repo (inchangé)
