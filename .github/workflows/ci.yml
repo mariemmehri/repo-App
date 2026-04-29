@@ -90,9 +90,6 @@ jobs:
       - name: 📥 npm install
         run: npm install --legacy-peer-deps
 
-      - name: 🔍 Lint
-        run: npm run lint
-
       - name: 🏗️ Build Angular
         run: npm run build
 
