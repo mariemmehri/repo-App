@@ -1,30 +1,31 @@
-name: CI — Build & Push to ACR
-# ll
+name: CI — Build, Test & Push to ACR
+
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
+permissions:
+  contents: read
+
+# ─── Global env ────────────────────────────────────────────────
 env:
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
   BACKEND_IMAGE: todo-backend
   FRONTEND_IMAGE: todo-frontend
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  # ═══════════════════════════════════════════════════════
-  # JOB 1 — Backend CI
-  # ═══════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 1 — Backend : compile + test + upload JAR (build once)
+  # ═══════════════════════════════════════════════════════════════
   backend-ci:
     name: 🔧 Backend — Build & Test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
+
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -53,15 +54,23 @@ jobs:
           path: backend/target/surefire-reports/
           retention-days: 7
 
-  # ═══════════════════════════════════════════════════════
-  # JOB 2 — Frontend CI
-  # ═══════════════════════════════════════════════════════
+      - name: 📦 Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: backend/target/*.jar
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 2 — Frontend : lint + build + upload dist (build once)
+  # ═══════════════════════════════════════════════════════════════
   frontend-ci:
-    name: 🎨 Frontend — Build
+    name: 🎨 Frontend — Lint & Build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
+
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -81,12 +90,22 @@ jobs:
       - name: 📥 npm install
         run: npm install --legacy-peer-deps
 
+      - name: 🔍 Lint
+        run: npm run lint
+
       - name: 🏗️ Build Angular
         run: npm run build
 
-  # ═══════════════════════════════════════════════════════
-  # JOB 3 — Docker Build & Push + Config Update
-  # ═══════════════════════════════════════════════════════
+      - name: 📦 Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 3 — Docker Build & Push → ACR  (push uniquement)
+  # ═══════════════════════════════════════════════════════════════
   docker-build-push:
     name: 🐳 Docker Build & Push → ACR
     runs-on: ubuntu-latest
@@ -97,48 +116,87 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
+      - name: 📦 Download JAR
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jar
+          path: backend/target/
+
+      - name: 📦 Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      # ── Plan B : ACR admin credentials ──────────────────────────
+      # Limitation : student subscription Azure sans Service Principal
+      # En production → remplacer par OIDC + Managed Identity fédérée :
+      #   azure/login@v2 avec client-id / tenant-id / subscription-id
+      #   + az acr login --name <ACR_NAME>
+      # ─────────────────────────────────────────────────────────────
+      - name: 🔐 Login ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
       - name: 🧹 Normalize ACR login server
         id: normalize
         run: |
-          REGISTRY="${ACR_LOGIN_SERVER#https://}"
+          REGISTRY="${{ secrets.ACR_LOGIN_SERVER }}"
+          REGISTRY="${REGISTRY#https://}"
           REGISTRY="${REGISTRY#http://}"
           REGISTRY="${REGISTRY%/}"
-          ACR_NAME="${REGISTRY%%.*}"
 
           if [ -z "$REGISTRY" ]; then
-            echo "ACR_LOGIN_SERVER is empty after normalization"
+            echo "❌ ACR_LOGIN_SERVER is empty after normalization"
             exit 1
           fi
 
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
 
-      - name: 🔐 Login ACR
-        uses: docker/login-action@v3
+      - name: 🛡️ Scan vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@master
         with:
-          registry: ${{ steps.normalize.outputs.registry }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: 1
 
       - name: 🐳 Build & Push Backend
         run: |
           docker build \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }} \
+            -t ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:latest \
             ./backend
-          docker push \
-            ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+
+          docker push ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+          docker push ${{ steps.normalize.outputs.registry }}/${{ env.BACKEND_IMAGE }}:latest
 
       - name: 🐳 Build & Push Frontend
         run: |
           docker build \
             -t ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }} \
+            -t ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:latest \
             ./frontend
-          docker push \
-            ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
 
-      - name: 🔄 Update image tag in Config Repo
+          docker push ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
+          docker push ${{ steps.normalize.outputs.registry }}/${{ env.FRONTEND_IMAGE }}:latest
+
+      # ═══════════════════════════════════════════════════════════
+      # GitOps — Update Config Repo (inchangé)
+      # ═══════════════════════════════════════════════════════════
+      - name: 📦 Install yq (version fixe)
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: 🔄 Update image tags in Config Repo
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          IMAGE_TAG: ${{ github.sha }}
           CONFIG_REPO: mariemmehri/repo-config
           VALUES_FILE: charts/todo-app/values-staging.yaml
           GIT_USER_EMAIL: "github-actions[bot]@users.noreply.github.com"
@@ -146,32 +204,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ── Install yq ──────────────────────────────────
-          echo "📦 Installing yq..."
-          wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          chmod +x /usr/local/bin/yq
-          yq --version
-
-          # ── Clone Config Repo ────────────────────────────
-          echo "📥 Cloning config repo..."
           git clone \
             https://x-access-token:${GH_PAT}@github.com/${CONFIG_REPO}.git \
             config-repo
           cd config-repo
 
-          # ── Update tags ──────────────────────────────────
-          echo "✏️  Updating image tags to ${IMAGE_TAG}..."
-          yq e ".backend.image.tag = \"${IMAGE_TAG}\"" -i ${VALUES_FILE}
+          yq e ".backend.image.tag  = \"${IMAGE_TAG}\"" -i ${VALUES_FILE}
           yq e ".frontend.image.tag = \"${IMAGE_TAG}\"" -i ${VALUES_FILE}
 
-          # ── Verify ───────────────────────────────────────
-          echo "🔍 Verifying changes..."
+          echo "🔍 Verifying..."
           grep "tag:" ${VALUES_FILE}
 
-          # ── Commit & Push ────────────────────────────────
           git config user.email "${GIT_USER_EMAIL}"
-          git config user.name "${GIT_USER_NAME}"
+          git config user.name  "${GIT_USER_NAME}"
           git add ${VALUES_FILE}
 
           if git diff --cached --quiet; then
@@ -181,9 +226,9 @@ jobs:
 
           git commit -m "ci: update image tags to ${IMAGE_TAG}
 
-          Triggered by: ${GITHUB_REPOSITORY}@${GITHUB_SHA}
-          Branch: ${GITHUB_REF_NAME}
-          Workflow: ${GITHUB_WORKFLOW}"
+          Triggered by : ${GITHUB_REPOSITORY}@${GITHUB_SHA}
+          Branch       : ${GITHUB_REF_NAME}
+          Workflow     : ${GITHUB_WORKFLOW}"
 
           git push
           echo "✅ Done"
