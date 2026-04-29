@@ -1,6 +1,5 @@
-# Ignorer le dossier de build local
-target
-*.jar
+# Le pipeline CI dépose le JAR dans target/ avant docker build.
+# Ne pas ignorer target/*.jar sinon COPY target/*.jar échoue.
 
 # Fichiers IDE et Git
 .git

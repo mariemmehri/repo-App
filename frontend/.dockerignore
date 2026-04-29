@@ -2,8 +2,8 @@
 node_modules
 .angular
 
-# Ignorer les builds locaux
-dist
+# Le pipeline CI dépose le build Angular dans dist/ avant docker build.
+# Ne pas ignorer dist sinon COPY dist/... échoue.
 out-tsc
 
 # Fichiers IDE et Git
