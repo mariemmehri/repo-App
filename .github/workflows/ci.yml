@@ -125,23 +125,19 @@ jobs:
           name: frontend-dist
           path: frontend/dist/
 
-      # ── Plan B : ACR admin credentials ──────────────────────────
-      # Limitation : student subscription Azure sans Service Principal
-      # En production → remplacer par OIDC + Managed Identity fédérée :
-      #   azure/login@v2 avec client-id / tenant-id / subscription-id
-      #   + az acr login --name <ACR_NAME>
-      # ─────────────────────────────────────────────────────────────
-      - name: 🔐 Login ACR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: 🧹 Normalize ACR login server
+      # ── Normalize & validate ACR registry ───────────────────────
+      - name: 🧹 Normalize & validate ACR login server
         id: normalize
         run: |
           REGISTRY="${{ secrets.ACR_LOGIN_SERVER }}"
+
+          if [ -z "$REGISTRY" ]; then
+            echo "❌ ERROR: ACR_LOGIN_SERVER secret is NOT SET or EMPTY"
+            echo "   → Go to Settings > Secrets > Actions"
+            echo "   → Add ACR_LOGIN_SERVER = your-registry.azurecr.io"
+            exit 1
+          fi
+
           REGISTRY="${REGISTRY#https://}"
           REGISTRY="${REGISTRY#http://}"
           REGISTRY="${REGISTRY%/}"
@@ -153,7 +149,14 @@ jobs:
 
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
 
-      - name: 🛡️ Scan vulnerabilities (Trivy)
+      - name: � Login ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.normalize.outputs.registry }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: �🛡️ Scan vulnerabilities (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
